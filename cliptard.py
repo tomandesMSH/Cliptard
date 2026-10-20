@@ -86,7 +86,7 @@ histfile = os.path.join(os.path.expanduser("~"), "cliphistory.json")
 
 bg = "#1f1f1f"
 bg2 = "#2b2b2b"
-bg2hover = "#333"
+bg2hover = "#333333"
 border = "#3a3a3a"
 fg = "#f2f2f2"
 fg_dim = "#a0a0a0"
@@ -112,6 +112,72 @@ def round_corners(win):
         ctypes.windll.user32.SetWindowRgn(hwnd, rgn, True)
     except OSError:
         pass
+
+class _ACCENT_POLICY(ctypes.Structure):
+    _fields_ = [("AccentState", ctypes.c_int), ("AccentFlags", ctypes.c_int),
+                ("GradientColor", ctypes.c_uint), ("AnimationId", ctypes.c_int)]
+
+class _WINDOWCOMPOSITIONATTRIBDATA(ctypes.Structure):
+    _fields_ = [("Attribute", ctypes.c_int),
+                ("Data", ctypes.POINTER(_ACCENT_POLICY)),
+                ("SizeOfData", ctypes.c_size_t)]
+
+ACCENT_ENABLE_ACRYLICBLURBEHIND = 4
+WCA_ACCENT_POLICY = 19
+
+def enable_glass(win):
+    # frosted acrylic backdrop behind the whole popup (win10 1809+/11).
+    # undocumented API (SetWindowCompositionAttribute) - silently does
+    # nothing on older windows or if dwm composition is off, window
+    # just keeps its flat bg color in that case
+    try:
+        hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
+        accent = _ACCENT_POLICY()
+        accent.AccentState = ACCENT_ENABLE_ACRYLICBLURBEHIND
+        accent.AccentFlags = 2
+        r, g, b, a = 0x1f, 0x1f, 0x1f, 0xA8
+        accent.GradientColor = (a << 24) | (b << 16) | (g << 8) | r
+        data = _WINDOWCOMPOSITIONATTRIBDATA()
+        data.Attribute = WCA_ACCENT_POLICY
+        data.SizeOfData = ctypes.sizeof(accent)
+        data.Data = ctypes.pointer(accent)
+        ctypes.windll.user32.SetWindowCompositionAttribute(hwnd, ctypes.byref(data))
+    except OSError:
+        pass
+
+def _hex_to_rgb(h):
+    h = h.lstrip("#")
+    return tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+
+def _rgb_to_hex(rgb):
+    return "#%02x%02x%02x" % rgb
+
+def animate_bg(widgets, target_hex, steps=6, delay=14):
+    # fades the given widgets' background to target_hex over a few
+    # steps instead of snapping instantly - makes hover/selection feel
+    # less flat against the glass backdrop
+    if not widgets:
+        return
+    starts = []
+    for w in widgets:
+        try:
+            starts.append(_hex_to_rgb(w.cget("bg")))
+        except tk.TclError:
+            return
+    target = _hex_to_rgb(target_hex)
+
+    def step(i=1):
+        for w, s in zip(widgets, starts):
+            t = i / steps
+            cur = tuple(int(s[c] + (target[c] - s[c]) * t) for c in range(3))
+            try:
+                w.configure(bg=_rgb_to_hex(cur))
+            except tk.TclError:
+                return
+        if i < steps:
+            widgets[0].after(delay, lambda: step(i + 1))
+
+    step()
 
 hist = []
 
@@ -207,9 +273,9 @@ def select_row(idx, e=None):
     for i, rw in enumerate(row_widgets):
         on = (i == idx)
         color = bg2hover if on else bg2
-        rw["frame"].configure(bg=color)
-        rw["label"].configure(bg=color)
-        rw["delbtn"].configure(bg=color)
+        animate_bg([rw["frame"], rw["label"], rw["delbtn"]], color)
+        rw["frame"].configure(highlightbackground=accent if on else border,
+                                highlightcolor=accent if on else border)
     selected_idx = idx
 
 def move_selection(delta):
@@ -244,6 +310,7 @@ def open_popup():
     popup_win = win
     win.overrideredirect(True)
     win.attributes("-topmost", True)
+    win.attributes("-alpha", 0.0)
     win.configure(bg=border)
 
     x = win.winfo_pointerx() - w // 2
@@ -301,10 +368,22 @@ def open_popup():
     win.bind("<Delete>", delete_selected)
     win.focus_force()
 
-    # SetWindowRgn has to be applied after Windows actually maps the
-    # window, or it gets silently dropped once the initial show/layout
-    # finishes - a same-tick call is too early
-    win.after(10, lambda: round_corners(win))
+    # round_corners/enable_glass have to be applied after Windows
+    # actually maps the window, or they get silently dropped once the
+    # initial show/layout finishes - a same-tick call is too early
+    def fade_in(i=1, steps=8, delay=12):
+        try:
+            win.attributes("-alpha", i / steps)
+        except tk.TclError:
+            return
+        if i < steps:
+            win.after(delay, lambda: fade_in(i + 1, steps, delay))
+
+    def apply_window_fx():
+        round_corners(win)
+        enable_glass(win)
+        fade_in()
+    win.after(10, apply_window_fx)
 
     # give the window a beat to actually get its final geometry
     # before we start checking clicks against its bounds
@@ -315,7 +394,8 @@ def make_row(parent, text, idx):
     if len(shown) > 160:
         shown = shown[:160] + "..."
 
-    row = tk.Frame(parent, bg=bg2, cursor="hand2")
+    row = tk.Frame(parent, bg=bg2, cursor="hand2",
+                    highlightthickness=1, highlightbackground=border, highlightcolor=border)
     row.pack(fill="x", pady=3)
 
     # pack the fixed-width delete button first so it reserves its edge
