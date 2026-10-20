@@ -26,23 +26,36 @@ else:
 # already sitting there when we start, kill that process and stop
 pidfile = os.path.join(os.path.expanduser("~"), "clipmgr.pid")
 
+def pid_is_us(pid):
+    # confirm the PID in the pidfile is actually another cliptard
+    # instance (by image name) before we kill it - a stale pidfile
+    # pointing at a reused PID could otherwise kill an unrelated process
+    try:
+        out = subprocess.run(
+            ["tasklist", "/FI", "PID eq " + str(pid), "/FO", "CSV", "/NH"],
+            capture_output=True, text=True
+        )
+        name = os.path.basename(this_file).lower()
+        return name in out.stdout.lower()
+    except OSError:
+        return False
+
 if os.path.exists(pidfile):
     old_pid = None
     try:
-        f = open(pidfile, "r")
-        old_pid = int(f.read().strip())
-        f.close()
-    except:
+        with open(pidfile, "r") as f:
+            old_pid = int(f.read().strip())
+    except (OSError, ValueError):
         old_pid = None
 
-    if old_pid is not None and old_pid != os.getpid():
+    if old_pid is not None and old_pid != os.getpid() and pid_is_us(old_pid):
         subprocess.run(["taskkill", "/F", "/PID", str(old_pid)],
                         capture_output=True)
         # something was already running - kill it and stop here,
         # don't start a new instance too
         try:
             os.remove(pidfile)
-        except:
+        except OSError:
             pass
         sys.exit()
 
@@ -84,18 +97,16 @@ def load_hist():
     global hist
     if os.path.exists(histfile):
         try:
-            f = open(histfile, "r", encoding="utf-8")
-            hist = json.load(f)
-            f.close()
-        except:
+            with open(histfile, "r", encoding="utf-8") as f:
+                hist = json.load(f)
+        except (OSError, ValueError):
             hist = []
 
 def save_hist():
     try:
-        f = open(histfile, "w", encoding="utf-8")
-        json.dump(hist, f, ensure_ascii=False)
-        f.close()
-    except:
+        with open(histfile, "w", encoding="utf-8") as f:
+            json.dump(hist, f, ensure_ascii=False)
+    except OSError:
         pass
 
 def add_to_hist(txt):
@@ -117,12 +128,12 @@ def clipboard_loop():
     last = ""
     try:
         last = pyperclip.paste()
-    except:
+    except pyperclip.PyperclipException:
         pass
     while True:
         try:
             cur = pyperclip.paste()
-        except:
+        except pyperclip.PyperclipException:
             cur = last
         if cur != last and cur.strip() != "":
             add_to_hist(cur)
@@ -140,7 +151,7 @@ def close_popup():
     if popup_win:
         try:
             popup_win.destroy()
-        except:
+        except tk.TclError:
             pass
         popup_win = None
 
@@ -157,7 +168,7 @@ def start_outside_click_watcher(win):
             wy = win.winfo_rooty()
             ww = win.winfo_width()
             wh = win.winfo_height()
-        except:
+        except tk.TclError:
             return  # window already gone
         if not (wx <= x <= wx + ww and wy <= y <= wy + wh):
             win.after(0, close_popup)

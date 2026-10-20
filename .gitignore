@@ -1,0 +1,9 @@
+*.exe
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+.venv/
+venv/
+*.pid
