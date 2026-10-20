@@ -93,18 +93,23 @@ fg_dim = "#a0a0a0"
 accent = "#4cc2ff"
 danger = "#e06c6c"
 
-DWMWA_WINDOW_CORNER_PREFERENCE = 33
-DWMWCP_ROUND = 2
+CORNER_RADIUS = 14
 
 def round_corners(win):
-    # windows 11 only - older windows just ignores this call
+    # DwmSetWindowAttribute's corner-preference flag is a no-op on
+    # overrideredirect/WS_POPUP windows since there's no DWM frame to
+    # round - clipping the HWND to a round-rect region is what actually
+    # works for a borderless popup like this one.
+    # winfo_id() gives tk's inner child window, not the actual top-level
+    # HWND the OS knows about - GetParent gets us the real one
     try:
-        hwnd = win.winfo_id()
-        value = ctypes.c_int(DWMWCP_ROUND)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(
-            hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
-            ctypes.byref(value), ctypes.sizeof(value)
+        hwnd = ctypes.windll.user32.GetParent(win.winfo_id())
+        w = win.winfo_width()
+        h = win.winfo_height()
+        rgn = ctypes.windll.gdi32.CreateRoundRectRgn(
+            0, 0, w + 1, h + 1, CORNER_RADIUS, CORNER_RADIUS
         )
+        ctypes.windll.user32.SetWindowRgn(hwnd, rgn, True)
     except OSError:
         pass
 
@@ -296,7 +301,10 @@ def open_popup():
     win.bind("<Delete>", delete_selected)
     win.focus_force()
 
-    round_corners(win)
+    # SetWindowRgn has to be applied after Windows actually maps the
+    # window, or it gets silently dropped once the initial show/layout
+    # finishes - a same-tick call is too early
+    win.after(10, lambda: round_corners(win))
 
     # give the window a beat to actually get its final geometry
     # before we start checking clicks against its bounds
@@ -309,12 +317,17 @@ def make_row(parent, text, idx):
 
     row = tk.Frame(parent, bg=bg2, cursor="hand2")
     row.pack(fill="x", pady=3)
-    lbl = tk.Label(row, text=shown, bg=bg2, fg=fg, font=("Segoe UI", 10),
-                    wraplength=225, justify="left", anchor="w")
-    lbl.pack(side="left", fill="both", expand=True, padx=(10,0), pady=8)
 
+    # pack the fixed-width delete button first so it reserves its edge
+    # before the label claims the rest of the row - packing the
+    # expand=True label first makes it grab the whole row width and
+    # push the button out past the window bounds
     delbtn = tk.Label(row, text="x", bg=bg2, fg=fg_dim, font=("Segoe UI", 10, "bold"), cursor="hand2")
     delbtn.pack(side="right", padx=10, pady=8)
+
+    lbl = tk.Label(row, text=shown, bg=bg2, fg=fg, font=("Segoe UI", 10),
+                    wraplength=215, justify="left", anchor="w")
+    lbl.pack(side="left", fill="both", expand=True, padx=(10,0), pady=8)
 
     row_widgets.append({"frame": row, "label": lbl, "delbtn": delbtn})
 
