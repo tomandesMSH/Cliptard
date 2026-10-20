@@ -324,9 +324,10 @@ def open_popup():
     inner = tk.Frame(win, bg=bg)
     inner.pack(fill="both", expand=True, padx=1, pady=1)
 
-    top = tk.Frame(inner, bg=bg)
+    top = tk.Frame(inner, bg=bg, cursor="fleur")
     top.pack(fill="x", padx=12, pady=10)
-    tk.Label(top, text="Clipboard", bg=bg, fg=fg, font=("Segoe UI", 11, "bold")).pack(side="left")
+    titlelbl = tk.Label(top, text="Clipboard", bg=bg, fg=fg, font=("Segoe UI", 11, "bold"), cursor="fleur")
+    titlelbl.pack(side="left")
     clearbtn = tk.Label(top, text="Clear all", bg=bg, fg=accent, font=("Segoe UI", 9), cursor="hand2")
     clearbtn.pack(side="right")
 
@@ -335,6 +336,22 @@ def open_popup():
         save_hist()
         refresh()
     clearbtn.bind("<Button-1>", clear_all)
+
+    # no title bar since the window is overrideredirect - drag from the
+    # "Clipboard" header row instead to move the popup around
+    drag_origin = {}
+
+    def start_drag(e):
+        drag_origin["x"] = e.x_root - win.winfo_x()
+        drag_origin["y"] = e.y_root - win.winfo_y()
+
+    def do_drag(e):
+        win.geometry("+%d+%d" % (e.x_root - drag_origin["x"], e.y_root - drag_origin["y"]))
+
+    top.bind("<ButtonPress-1>", start_drag)
+    top.bind("<B1-Motion>", do_drag)
+    titlelbl.bind("<ButtonPress-1>", start_drag)
+    titlelbl.bind("<B1-Motion>", do_drag)
 
     body = tk.Frame(inner, bg=bg)
     body.pack(fill="both", expand=True, padx=8, pady=(0,8))
