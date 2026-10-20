@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import subprocess
+import ctypes
 from pynput import mouse
 
 import tkinter as tk
@@ -90,6 +91,22 @@ border = "#3a3a3a"
 fg = "#f2f2f2"
 fg_dim = "#a0a0a0"
 accent = "#4cc2ff"
+danger = "#e06c6c"
+
+DWMWA_WINDOW_CORNER_PREFERENCE = 33
+DWMWCP_ROUND = 2
+
+def round_corners(win):
+    # windows 11 only - older windows just ignores this call
+    try:
+        hwnd = win.winfo_id()
+        value = ctypes.c_int(DWMWCP_ROUND)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd, DWMWA_WINDOW_CORNER_PREFERENCE,
+            ctypes.byref(value), ctypes.sizeof(value)
+        )
+    except OSError:
+        pass
 
 hist = []
 
@@ -142,9 +159,11 @@ def clipboard_loop():
 
 popup_win = None
 mouse_listener = None
+row_widgets = []   # [{"frame", "label", "delbtn"}, ...] parallel to hist
+selected_idx = -1
 
 def close_popup():
-    global popup_win, mouse_listener
+    global popup_win, mouse_listener, row_widgets, selected_idx
     if mouse_listener:
         mouse_listener.stop()
         mouse_listener = None
@@ -154,6 +173,8 @@ def close_popup():
         except tk.TclError:
             pass
         popup_win = None
+    row_widgets = []
+    selected_idx = -1
 
 def start_outside_click_watcher(win):
     # pynput runs this on its own thread, so we just check bounds
@@ -175,6 +196,34 @@ def start_outside_click_watcher(win):
 
     mouse_listener = mouse.Listener(on_click=on_click)
     mouse_listener.start()
+
+def select_row(idx, e=None):
+    global selected_idx
+    for i, rw in enumerate(row_widgets):
+        on = (i == idx)
+        color = bg2hover if on else bg2
+        rw["frame"].configure(bg=color)
+        rw["label"].configure(bg=color)
+        rw["delbtn"].configure(bg=color)
+    selected_idx = idx
+
+def move_selection(delta):
+    if not row_widgets:
+        return
+    new_idx = selected_idx + delta
+    new_idx = max(0, min(len(row_widgets) - 1, new_idx))
+    select_row(new_idx)
+
+def activate_selected(e=None):
+    if 0 <= selected_idx < len(hist):
+        pyperclip.copy(hist[selected_idx])
+        close_popup()
+
+def delete_selected(e=None):
+    if 0 <= selected_idx < len(hist):
+        hist.pop(selected_idx)
+        save_hist()
+        refresh()
 
 def open_popup():
     global popup_win
@@ -233,42 +282,61 @@ def open_popup():
         tk.Label(list_frame, text="Items you copy will show up here", bg=bg, fg=fg_dim,
                   font=("Segoe UI", 10), wraplength=260, justify="left").pack(pady=20)
 
-    for item in hist:
-        make_row(list_frame, item)
+    for i, item in enumerate(hist):
+        make_row(list_frame, item, i)
+
+    if hist:
+        select_row(0)
 
     win.bind("<Escape>", lambda e: close_popup())
     win.bind("<FocusOut>", lambda e: close_popup())
+    win.bind("<Up>", lambda e: move_selection(-1))
+    win.bind("<Down>", lambda e: move_selection(1))
+    win.bind("<Return>", activate_selected)
+    win.bind("<Delete>", delete_selected)
     win.focus_force()
+
+    round_corners(win)
 
     # give the window a beat to actually get its final geometry
     # before we start checking clicks against its bounds
     win.after(150, lambda: start_outside_click_watcher(win))
 
-def make_row(parent, text):
+def make_row(parent, text, idx):
     shown = text
-    if len(shown) > 180:
-        shown = shown[:180] + "..."
+    if len(shown) > 160:
+        shown = shown[:160] + "..."
 
     row = tk.Frame(parent, bg=bg2, cursor="hand2")
     row.pack(fill="x", pady=3)
     lbl = tk.Label(row, text=shown, bg=bg2, fg=fg, font=("Segoe UI", 10),
-                    wraplength=260, justify="left", anchor="w")
-    lbl.pack(fill="both", expand=True, padx=10, pady=8)
+                    wraplength=225, justify="left", anchor="w")
+    lbl.pack(side="left", fill="both", expand=True, padx=(10,0), pady=8)
+
+    delbtn = tk.Label(row, text="x", bg=bg2, fg=fg_dim, font=("Segoe UI", 10, "bold"), cursor="hand2")
+    delbtn.pack(side="right", padx=10, pady=8)
+
+    row_widgets.append({"frame": row, "label": lbl, "delbtn": delbtn})
 
     def do_copy(e=None):
         pyperclip.copy(text)
         close_popup()
 
+    def do_delete(e=None):
+        hist.pop(idx)
+        save_hist()
+        refresh()
+
     def hover_in(e=None):
-        row.configure(bg=bg2hover)
-        lbl.configure(bg=bg2hover)
+        delbtn.configure(fg=danger)
+        select_row(idx)
 
     def hover_out(e=None):
-        row.configure(bg=bg2)
-        lbl.configure(bg=bg2)
+        delbtn.configure(fg=fg_dim)
 
     row.bind("<Button-1>", do_copy)
     lbl.bind("<Button-1>", do_copy)
+    delbtn.bind("<Button-1>", do_delete)
     row.bind("<Enter>", hover_in)
     lbl.bind("<Enter>", hover_in)
     row.bind("<Leave>", hover_out)
