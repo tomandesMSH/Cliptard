@@ -233,8 +233,18 @@ mouse_listener = None
 row_widgets = []   # [{"frame", "label", "delbtn"}, ...] parallel to hist
 selected_idx = -1
 
+# (x, y, w, h) of the current popup, written only from the tk thread -
+# the outside-click watcher runs on pynput's own thread and must NOT
+# call win.winfo_*() directly (tkinter isn't thread-safe; querying
+# widget geometry from a foreign thread can return stale/torn values,
+# which was causing the popup to close itself on a legitimate click
+# near its own border, especially right after being dragged)
+popup_bounds = None
+
 def close_popup():
-    global popup_win, mouse_listener, row_widgets, selected_idx
+    global popup_win, mouse_listener, row_widgets, selected_idx, popup_bounds
+    # stop the listener before destroying the window so no queued
+    # on_click callback can fire against a half-destroyed widget
     if mouse_listener:
         mouse_listener.stop()
         mouse_listener = None
@@ -246,22 +256,21 @@ def close_popup():
         popup_win = None
     row_widgets = []
     selected_idx = -1
+    popup_bounds = None
 
 def start_outside_click_watcher(win):
-    # pynput runs this on its own thread, so we just check bounds
-    # and hop back onto the tk thread to actually close
+    # pynput runs this on its own thread - only touch popup_bounds
+    # (plain tuple read, safe under the GIL) and hop back onto the tk
+    # thread via after() to actually close
     global mouse_listener
 
     def on_click(x, y, button, pressed):
         if not pressed:
             return
-        try:
-            wx = win.winfo_rootx()
-            wy = win.winfo_rooty()
-            ww = win.winfo_width()
-            wh = win.winfo_height()
-        except tk.TclError:
-            return  # window already gone
+        b = popup_bounds
+        if b is None:
+            return
+        wx, wy, ww, wh = b
         if not (wx <= x <= wx + ww and wy <= y <= wy + wh):
             win.after(0, close_popup)
 
@@ -297,7 +306,7 @@ def delete_selected(e=None):
         refresh()
 
 def open_popup():
-    global popup_win
+    global popup_win, popup_bounds
 
     # toggle - if its already open just close it
     if popup_win:
@@ -320,6 +329,7 @@ def open_popup():
     if y < 10:
         y = 10
     win.geometry(str(w) + "x" + str(h) + "+" + str(x) + "+" + str(y))
+    popup_bounds = (x, y, w, h)
 
     inner = tk.Frame(win, bg=bg)
     inner.pack(fill="both", expand=True, padx=1, pady=1)
@@ -346,7 +356,14 @@ def open_popup():
         drag_origin["y"] = e.y_root - win.winfo_y()
 
     def do_drag(e):
-        win.geometry("+%d+%d" % (e.x_root - drag_origin["x"], e.y_root - drag_origin["y"]))
+        global popup_bounds
+        nx = e.x_root - drag_origin["x"]
+        ny = e.y_root - drag_origin["y"]
+        win.geometry("+%d+%d" % (nx, ny))
+        # keep the outside-click watcher's bounds in sync - computed
+        # directly here (tk thread) rather than read back via winfo_*,
+        # which the watcher's foreign thread must never touch
+        popup_bounds = (nx, ny, w, h)
 
     top.bind("<ButtonPress-1>", start_drag)
     top.bind("<B1-Motion>", do_drag)
@@ -378,7 +395,11 @@ def open_popup():
         select_row(0)
 
     win.bind("<Escape>", lambda e: close_popup())
-    win.bind("<FocusOut>", lambda e: close_popup())
+    # NOTE: deliberately no <FocusOut> auto-close here - the outside
+    # click watcher above already closes on a real click elsewhere, and
+    # FocusOut also fires when a click lands in the few pixels clipped
+    # away by the rounded corners (missing the window entirely), which
+    # was closing the popup on a perfectly normal click near its own edge
     win.bind("<Up>", lambda e: move_selection(-1))
     win.bind("<Down>", lambda e: move_selection(1))
     win.bind("<Return>", activate_selected)
@@ -456,6 +477,20 @@ def refresh():
     close_popup()
     open_popup()
 
+_last_hotkey_fire = 0.0
+
+def on_hotkey():
+    # a 3-key chord like alt+v+c can occasionally double-fire the
+    # callback for one physical press (key order/timing quirks in the
+    # keyboard lib) - ignore a second trigger that lands right after
+    # the first one, instead of toggling the popup twice
+    global _last_hotkey_fire
+    now = time.monotonic()
+    if now - _last_hotkey_fire < 0.4:
+        return
+    _last_hotkey_fire = now
+    open_popup()
+
 if __name__ == "__main__":
     root = tk.Tk()
     root.withdraw()
@@ -464,7 +499,7 @@ if __name__ == "__main__":
     t.daemon = True
     t.start()
 
-    keyboard.add_hotkey(HOTKEY, lambda: root.after(0, open_popup))
+    keyboard.add_hotkey(HOTKEY, lambda: root.after(0, on_hotkey))
 
     print("running." , HOTKEY , "to open")
 
